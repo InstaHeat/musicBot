@@ -1,12 +1,17 @@
 import os
 import asyncio
-from dotenv import load_dotenv  # Для загрузки переменных из .env
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile  # Используем FSInputFile для отправки файлов
+from aiogram.types import Message, FSInputFile
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 import yt_dlp
+import logging
+from aiohttp import web
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -28,7 +33,7 @@ if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
 # Обработчик команды /start
-@dp.message(Command("start"))
+@dp.message(commands=["start"])
 async def start_handler(message: Message):
     await message.answer("🎵 Привет! Отправь мне название песни или исполнителя")
 
@@ -50,8 +55,8 @@ async def download_music(message: Message):
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s.%(ext)s',  # Сохраняем файл в папку downloads
             'quiet': True,
             'cookies': COOKIES_FILE,  # Добавляем путь к файлу с cookies
-            'socket_timeout': 15,     # Увеличиваем таймаут до 15 секунд
-            'retries': 5              # Добавляем количество попыток повторного подключения
+            'socket_timeout': 30,     # Увеличиваем таймаут до 30 секунд
+            'retries': 10             # Добавляем количество попыток повторного подключения
         }
 
         # Скачивание и конвертация
@@ -70,19 +75,32 @@ async def download_music(message: Message):
             await message.reply_audio(
                 audio=audio_file,
                 title=info.get('title', 'Audio'),
-                performer=info.get('uploader', 'Unknown artist'),
-                timeout=120
+                performer=info.get('uploader', 'Unknown artist')
             )
 
             # Удаление временного файла
             os.remove(mp3_path)
 
     except Exception as e:
+        logger.error(f"Произошла ошибка: {e}")
         await message.answer(f"❌ Ошибка: {str(e)}")
 
-# Запуск бота
-async def main():
-    await dp.start_polling(bot)
+# Настройка Webhook
+async def on_startup(app):
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/{BOT_TOKEN}"
+    await bot.set_webhook(webhook_url)
 
+# Обработка входящих запросов
+async def handle_webhook(request):
+    update = await request.json()
+    await dp.process_update(update)
+    return web.Response()
+
+# Создание веб-сервера
+app = web.Application()
+app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
+
+# Запуск бота
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.on_startup.append(on_startup)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
